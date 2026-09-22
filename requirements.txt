@@ -1,0 +1,7 @@
+streamlit==1.56.0
+pandas
+numpy
+pyarrow
+duckdb
+plotly
+yfinance
