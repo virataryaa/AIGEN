@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import duckdb
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -8,6 +9,7 @@ import streamlit as st
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATABASE_DIR = BASE_DIR / "Database"
+PRICES_GLOB = str(DATABASE_DIR / "prices" / "*.parquet")
 
 st.set_page_config(page_title="Aigen Vector", layout="wide")
 
@@ -19,14 +21,29 @@ def load_universe() -> pd.DataFrame:
 
 @st.cache_data
 def load_all_prices() -> pd.DataFrame:
-    return pd.read_parquet(DATABASE_DIR / "all_prices.parquet")
+    """Built in-memory from the per-ticker parquet files (not stored on disk,
+    to avoid committing large derived files to git)."""
+    con = duckdb.connect()
+    return con.execute(f"""
+        SELECT Ticker, Date, Open, High, Low, Close, Adj_Close, Volume,
+               Dividends, Stock_Splits
+        FROM read_parquet('{PRICES_GLOB}')
+        ORDER BY Ticker, Date
+    """).fetchdf()
 
 
 @st.cache_data
 def load_returns_matrix() -> pd.DataFrame:
-    df = pd.read_parquet(DATABASE_DIR / "returns_matrix.parquet")
-    df["Date"] = pd.to_datetime(df["Date"])
-    return df.set_index("Date")
+    """Daily returns pivoted wide (Date x Ticker), built in-memory via DuckDB."""
+    con = duckdb.connect()
+    returns_df = con.execute(f"""
+        SELECT Ticker, Date,
+               Adj_Close / LAG(Adj_Close) OVER (PARTITION BY Ticker ORDER BY Date) - 1 AS ret
+        FROM read_parquet('{PRICES_GLOB}')
+    """).fetchdf()
+    wide = returns_df.pivot(index="Date", columns="Ticker", values="ret")
+    wide.index = pd.to_datetime(wide.index)
+    return wide.sort_index()
 
 
 universe = load_universe()
