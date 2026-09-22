@@ -91,10 +91,53 @@ original hypothesis that Donchian breakout was hurting the signal
 horizon than 1-month across the board — makes sense for a trend-following
 approach, which needs time to play out.
 
-**Takeaway:** the composite is usable as a long-screen input, with
-`MA_cross_50_200` as the standout individual driver — worth considering a
-revised weighting that leans more on MA-cross and less on RSI/short
-momentum, next time this is revisited.
+**Takeaway (superseded below):** the composite is usable as a long-screen
+input, with `MA_cross_50_200` as the standout individual driver — worth
+considering a revised weighting that leans more on MA-cross and less on
+RSI/short momentum, next time this is revisited.
+
+### Full grid search — 34 signals, train/test split (`Code/optimize_signals.py`)
+Expanded to 8 families (Momentum, MA-cross, EMA-cross, RSI, TRIX, KAMA,
+Donchian, Bollinger) x multiple parameters = 34 instances, hand-rolled
+(TRIX/KAMA/BB formulas from the sibling CTA project). Split: train
+2001-03 to 2017-12 (202 months), test 2018-01 to 2026-06 (107 months) —
+only trust what holds up out-of-sample.
+
+Top 10 by out-of-sample (test) hit rate:
+
+| Signal | 1mo Test Hit | 1mo Test IC | 3mo Test Hit | 3mo Test IC |
+|---|---|---|---|---|
+| Momentum_200 | 73.8% | 0.031 | 75.7% | **0.068** (highest IC) |
+| **Momentum_150** | 63.1% | 0.024 | **77.7%** (best hit rate) | 0.057 |
+| TRIX_100 | 68.9% | 0.035 | 76.7% | 0.055 |
+| TRIX_50 | 68.0% | 0.029 | 75.7% | 0.045 |
+| Donchian_100 | 71.8% | 0.020 | 71.8% | 0.036 |
+| MA_50_200 | 69.9% | 0.030 | 74.8% | 0.052 |
+| EMA_50_150 | 69.9% | 0.030 | 74.8% | 0.051 |
+| EMA_50_200 | 68.0% | 0.031 | 74.8% | 0.052 |
+| MA_50_150 | 69.9% | 0.028 | 71.8% | 0.040 |
+| EMA_20_100 | 66.0% | 0.020 | 68.9% | 0.040 |
+
+**Findings:**
+- **Long lookbacks win everywhere.** 150-200 day momentum, 50-200 day
+  MA/EMA cross, 50-100 period TRIX, 100-day Donchian all land in the top
+  10. Short lookbacks (10-20 day momentum/Donchian/KAMA) are weak-to-failed
+  (test hit rate 44-59%, sometimes negative IC) — noise, not signal, at
+  this frequency.
+- **RSI is useless at every period tested** (7/14/21) — 45-57% test hit
+  rate, essentially random.
+- **`Momentum_150`/`Momentum_200` are the standout winners**, not
+  `MA_cross_50_200` as the earlier (smaller) test suggested — and their
+  test-period performance is *higher* than train, which is a good
+  robustness sign (not curve-fit to the training window).
+- **TRIX (long period) was previously untested and turned out strong** —
+  worth keeping now that the zoo was expanded.
+
+**Revised composite candidate** (not yet implemented in
+`compute_signals.py`/`build_signals.py` — still using the original 6-signal
+version as of this writing):
+`0.35*Momentum_150 + 0.35*Momentum_200 + 0.15*TRIX_100 + 0.15*MA_50_200`
+— all four robust on both train and test, no short-term/RSI noise.
 
 **Known caveat: survivorship bias.** The universe is today's active NSE
 list — any company that delisted/went bankrupt between 2000-2026 is
