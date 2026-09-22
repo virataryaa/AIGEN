@@ -139,6 +139,44 @@ version as of this writing):
 `0.35*Momentum_150 + 0.35*Momentum_200 + 0.15*TRIX_100 + 0.15*MA_50_200`
 — all four robust on both train and test, no short-term/RSI noise.
 
+### NIFTY-500-only re-test + mean-reversion candidates (`Code/optimize_signals_nifty500.py`)
+Repeated the grid search restricted to the original 500 (liquid) tickers
+only — addresses the concern that the full-982-universe edge might just be
+microcap noise/mispricing rather than a real, tradeable effect. Also added
+4 new signal families: Linear Regression Slope (trend), 52-week high
+proximity (trend), Bollinger z-score and short-term N-day return
+(mean-reversion candidates) — 44 signal instances total.
+
+**Result: the effect survives on liquid names, just at slightly smaller
+magnitude — this is a good sign, not a weakness.** Best 3-month hit rate
+drops from 77.7% (full 982) to 70.9% (NIFTY 500 only), which is expected
+(momentum/trend effects are well documented to be stronger in smaller/less
+liquid names) but the *pattern holds*: same signal families win, same ones
+lose.
+
+| Signal (NIFTY 500 only) | 3mo Test Hit | 3mo Test IC |
+|---|---|---|
+| TRIX_100 (new #1) | 70.9% | 0.047 |
+| **LRS_100** (new addition — strong) | 69.9% | 0.030 |
+| Momentum_200 | 67.0% | 0.066 (highest IC) |
+| MA_50_200 | 66.0% | 0.046 |
+| TRIX_50 | 66.0% | 0.038 |
+| LRS_200 | 65.0% | 0.049 |
+| High52W (new, moderate) | 62.1% | 0.044 |
+
+**Mean-reversion candidates definitively rejected.** `ZScore_10/20/50`
+(Bollinger-style overbought/oversold) and `ShortRet_5/10` (short-term
+reversal) all showed negative-to-near-zero IC and failed the robustness
+check in both train and test. **This universe/period is trend-following,
+not mean-reverting, at the horizons tested (1-3 months)** — don't spend
+more time on short-term reversal strategies without a different rationale
+(e.g. event-driven, not pure price-based).
+
+**Linear Regression Slope (LRS) is the standout new addition** — robust
+across both universes, both horizons, multiple windows (50/100/150/200 all
+positive). Worth folding into the production composite alongside
+Momentum/TRIX/MA-cross.
+
 **Known caveat: survivorship bias.** The universe is today's active NSE
 list — any company that delisted/went bankrupt between 2000-2026 is
 invisible to this backtest, which will make historical performance look
