@@ -57,35 +57,44 @@ into quintiles, measure forward returns (21d / 63d), check whether Q1
 (highest score) beats Q5 (lowest) and compute the Information Coefficient
 (Spearman rank correlation, score vs forward return).
 
-**Result (982 tickers, 305 monthly rebalances, 2001-03 to 2026-06): the
-composite signal underperforms, and the underperformance is statistically
-significant, not noise.**
+**CORRECTED (see mistake #6 below) — the first version of this backtest
+reported the opposite of the true result due to a labeling bug. The
+composite signal actually works: positive, statistically significant.**
+
+Result (982 tickers, 305 monthly rebalances, 2001-03 to 2026-06):
 
 | Metric | 1-month horizon | 3-month horizon |
 |---|---|---|
-| Q1 (top score) avg fwd return | 2.23% | 7.27% |
-| Q5 (bottom score) avg fwd return | 3.48% | 12.69% |
-| Q1 − Q5 spread | -1.25% (ann. -15.0%) | -5.41% (ann. -21.7%) |
-| t-stat / p-value | -3.06 / 0.0024 | -3.38 / 0.0008 |
-| Hit rate (Q1 > Q5) | 40.0% | 31.8% |
+| Top quintile avg fwd return | 3.48% | 12.69% |
+| Bottom quintile avg fwd return | 2.23% | 7.27% |
+| Top − Bottom spread | +1.25% (t=3.06, p=0.0024) | **+5.41%** (t=3.38, p=0.0008) |
+| Hit rate (top > bottom) | 60.0% | 68.2% |
 | Mean IC (Spearman) | +0.016 | +0.039 |
-| Monotonic Q1>...>Q5 | No | No |
 
-**Reading this correctly:** the top-scored quintile *lost* to the
-bottom-scored quintile, with high statistical confidence (p<0.01) — the
-opposite of what a working long-signal should show. The weak positive IC
-(cross-section-wide) alongside a negative Q1-Q5 spread suggests the
-relationship breaks down specifically at the extremes — likely a
-**momentum-crash / overbought-reversal effect**: stocks with the highest
-composite scores (recent breakout + strong momentum, e.g. the 20-day
-Donchian signal) tend to be short-term overbought and mean-revert, rather
-than continuing to trend, at least on this universe/period. **This
-composite, as currently built, should not be used as-is for a long
-screen** — it needs revision (candidates: drop or down-weight the
-Donchian breakout component, test each signal's standalone IC before
-combining, or explicitly separate a "trend continuation" regime from an
-"overbought reversal" regime) before treating its ranking as
-decision-useful.
+### Component decomposition (`Code/backtest_components.py`)
+Tested each of the 6 signals standalone to see which drive the composite's
+performance:
+
+| Signal | IC (63d) | Spread t-stat (63d) | Note |
+|---|---|---|---|
+| **MA_cross_50_200** | **+0.048** | **7.43** | Strongest, most consistent single signal — simple golden-cross beats everything else standalone |
+| Momentum_100 | +0.044 | 5.65 | Second strongest |
+| Full Composite | +0.039 | 5.04 | |
+| Donchian_20 | +0.015 | 3.42 | Contributes positively — dropping it *weakens* the composite (tested, see below) |
+| Momentum_20 | +0.014 | 2.02 | Weak at 1-month, only useful at 3-month |
+| RSI_14 | +0.010 | 2.12 | Weakest, near-zero/insignificant at 1-month |
+
+`Composite_NoDonchian` variant (momentum + MA-cross only, reweighted)
+scored *lower* than the full composite (63d spread 4.99% vs 5.41%) — the
+original hypothesis that Donchian breakout was hurting the signal
+(momentum-crash theory) was **wrong**. Signal works better at the 3-month
+horizon than 1-month across the board — makes sense for a trend-following
+approach, which needs time to play out.
+
+**Takeaway:** the composite is usable as a long-screen input, with
+`MA_cross_50_200` as the standout individual driver — worth considering a
+revised weighting that leans more on MA-cross and less on RSI/short
+momentum, next time this is revisited.
 
 **Known caveat: survivorship bias.** The universe is today's active NSE
 list — any company that delisted/went bankrupt between 2000-2026 is
@@ -132,6 +141,23 @@ better than a real-time strategy would have achieved.
    (Since fixed — this whole tab was later removed from the dashboard
    anyway, keeping only the Signal Screener.)
 
+6. **Misread `pd.qcut` label ordering — reported an inverted backtest
+   result that was actually correct.** `pd.qcut(x, 5, labels=[1,2,3,4,5])`
+   assigns label **1 to the lowest-value bin and label 5 to the
+   highest-value bin** (ascending, always — verified directly). The first
+   backtest script (`backtest_signals.py`) assumed "Q1 = highest composite
+   score" without checking this, so `Q1 - Q5` was actually computing
+   *(lowest score) - (highest score)* — a negative number that looked like
+   "the signal is inverted and harmful," when the real relationship was
+   positive and significant the whole time. Caught by writing a second,
+   independent script (`backtest_components.py`) that took the top/bottom
+   groups explicitly by `q_df.columns.max()/min()` instead of trusting the
+   label numbers, and getting the opposite sign. **Lesson: never trust
+   `qcut`/`cut` label numbers to mean "highest"/"lowest" — always derive
+   top/bottom from the actual bin values, and when a backtest result looks
+   dramatically wrong (a working signal being *actively* harmful, not just
+   noisy), suspect the harness before the signal.**
+
 5. **Streamlit Cloud served a stale build after a push.** After fixing
    mistake #1, the deployed app still threw `FileNotFoundError` for
    `signals.parquet` even though it was confirmed present on GitHub via
@@ -149,12 +175,10 @@ by `Code/generate_static_report.py` for quick local viewing without
 running Streamlit at all.
 
 ## Open items / next steps
-- **Composite signal needs revision — backtest shows it currently
-  underperforms (see Backtest section above), not just "unproven."**
-  Next: test each of the 6 signals' standalone IC/quintile spread
-  separately to find which one(s) are dragging performance down (prime
-  suspect: Donchian breakout, on overbought-reversal grounds) before
-  recombining.
+- Composite signal validated (positive, significant) — consider
+  reweighting to lean more on `MA_cross_50_200` (strongest standalone
+  driver) and less on `RSI_14`/`Momentum_20` (weakest), per the component
+  backtest above.
 - Decide whether to add fundamentals (PE/PB/ROE/debt) — current screener
   is technical-only, not true value investing
 - `Automator/` not yet set up for scheduled daily refresh
