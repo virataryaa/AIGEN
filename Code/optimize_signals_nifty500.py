@@ -42,7 +42,8 @@ def build_ticker_panel(ticker: str) -> pd.DataFrame | None:
         return None
 
     close = df["Adj_Close"].astype("float64")
-    signals = compute_all_signals(close)
+    volume = df["Volume"].astype("float64")
+    signals = compute_all_signals(close, volume)
     signal_names = list(signals.keys())
 
     dates = pd.to_datetime(df["Date"]).dt.tz_localize(None)
@@ -132,6 +133,15 @@ def main():
     panel = pd.concat(panels, ignore_index=True)
     elapsed = time.time() - t0
     print(f"\nPanel built in {elapsed:.1f}s: {len(panel)} obs, {panel['Ticker'].nunique()} tickers\n")
+
+    # Relative strength vs market: subtract the cross-sectional mean raw
+    # return (across all tickers, same date) from each ticker's own raw
+    # return -- removes market-wide beta so what's left is stock-specific
+    # trend. Can only be computed here (panel level), not per-ticker.
+    for n in [100, 150, 200]:
+        raw_col = f"RawRet_{n}"
+        market_mean = panel.groupby("Date")[raw_col].transform("mean")
+        panel[f"RelStrength_{n}"] = panel[raw_col] - market_mean
 
     signal_cols = [c for c in panel.columns if c not in ("Ticker", "Date") and not c.startswith("FwdRet_")]
     print(f"Testing {len(signal_cols)} signal instances (NIFTY 500 only) "

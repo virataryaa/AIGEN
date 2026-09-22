@@ -200,6 +200,58 @@ decisions — it only becomes usable at a 1-3 month holding horizon.**
 `TRIX_100` remains the most consistent performer across all three
 horizons.
 
+### Volume, relative strength, and longer windows (`signal_library.py` v3)
+Added 3 more candidate directions per the "what else could we check"
+brainstorm: raw (non-vol-normalized) N-day returns as a base for
+cross-sectional relative-strength-vs-market, an OBV-based volume signal
+(`OBV_LRS_n` — linear regression slope sign of On-Balance-Volume), and
+much longer Momentum/MA/EMA windows (300/400/500 days, extending the
+"longer lookback wins" pattern). 62 signal instances total, NIFTY 500,
+all 3 horizons.
+
+Top result (avg hit rate across 1wk/1mo/3mo):
+
+| Signal | Avg Hit Rate | Note |
+|---|---|---|
+| RawRet_100 / RelStrength_100 | 64.8% | Tied — see finding #1 below |
+| TRIX_100 | 64.7% | Still the most consistent overall performer |
+| MA_100_300 (new) | 63.7% | Good new entrant |
+| Momentum_200 | 63.1% | |
+| Momentum_300 (new) | 62.1% | |
+| **OBV_LRS_200 (new, volume-based)** | 61.8% | **First non-price signal to actually work** |
+| Momentum_400 / Momentum_500 (new) | 57.6% / 57.9% | **Worse** than 200-300 day versions |
+
+**Finding 1 — relative strength vs market has zero effect on rank-based
+metrics, and this is expected, not a bug.** `RelStrength_100` (raw return
+minus that date's cross-sectional mean return) produced numbers
+*identical* to `RawRet_100` alone. Reason: IC and quintile-spread are both
+computed from the **rank order** of the signal within each date —
+subtracting the same constant (the market average) from every ticker on
+that date shifts all values equally and **cannot change their relative
+ranking**. Relative-strength adjustment only matters for something that
+cares about the *absolute* return level (e.g. a market-neutral long-short
+portfolio's actual P&L), not for a rank-based stock-picking screener like
+this one. **Lesson: know what a metric is invariant to before spending
+compute testing a variant that can't possibly move it** — this
+demeaning transformation was mathematically guaranteed to be a no-op
+under IC/quintile-spread, and that could have been reasoned out before
+running the backtest, not just after.
+
+**Finding 2 — volume-based signals work.** `OBV_LRS_200` (the slope
+direction of On-Balance-Volume over 200 days) reaches 61.8% average hit
+rate, competitive with the best price-only signals, and is notably the
+best performer at the 3-month horizon among all new additions (69.9%).
+First confirmation that volume, not just price, carries usable signal
+here — `OBV_LRS_50` (short window) is weak (49.8%), consistent with the
+broader "long lookback wins" pattern extending to volume too.
+
+**Finding 3 — the "longer is always better" pattern has a ceiling.**
+Momentum/MA/EMA windows beyond ~200-300 days actually *underperform*
+the 100-200 day versions (e.g. Momentum_500 at 57.9% vs Momentum_200 at
+63.1%). There's a sweet spot, not a monotonic relationship — very long
+lookbacks become stale/irrelevant to current price action rather than
+more robust.
+
 8. **Forgot to exclude the new horizon's own forward-return column from
    the signal list.** When adding the 5-day horizon, `signal_cols` was
    still hardcoded to exclude only `FwdRet_21`/`FwdRet_63` by name — the

@@ -11,9 +11,9 @@ so optimize_signals.py can just merge all the dicts together.
 import numpy as np
 import pandas as pd
 
-MOMENTUM_WINDOWS = [10, 20, 50, 100, 150, 200]
-MA_PAIRS = [(10, 50), (20, 50), (20, 100), (50, 150), (50, 200)]
-EMA_PAIRS = [(10, 50), (20, 50), (20, 100), (50, 150), (50, 200)]
+MOMENTUM_WINDOWS = [10, 20, 50, 100, 150, 200, 300, 400, 500]
+MA_PAIRS = [(10, 50), (20, 50), (20, 100), (50, 150), (50, 200), (100, 300), (150, 400), (200, 500)]
+EMA_PAIRS = [(10, 50), (20, 50), (20, 100), (50, 150), (50, 200), (100, 300), (150, 400), (200, 500)]
 RSI_PERIODS = [7, 14, 21]
 TRIX_PERIODS = [10, 20, 50, 100]
 KAMA_PERIODS = [10, 20, 50, 100]
@@ -28,6 +28,17 @@ HIGH52W_WINDOW = 252                        # proximity to 52-week high
 # short-term overbought/oversold reversal instead of trend continuation)
 ZSCORE_WINDOWS = [10, 20, 50]               # (close - SMA) / std, raw value
 SHORT_REVERSAL_WINDOWS = [5, 10]            # raw n-day return (let IC sign show if it reverses or continues)
+
+# Raw (non-vol-normalized) N-day returns -- base for cross-sectional
+# relative-strength-vs-market, computed at the panel level in
+# optimize_signals_nifty500.py (needs all tickers on the same date, which
+# a single-ticker signal function can't see).
+RAW_RET_WINDOWS = [100, 150, 200]
+
+# Volume-based (untested data dimension until now -- everything above is
+# price-only). OBV = On Balance Volume: cumulative sum of volume, signed by
+# the day's price direction. Its own trend (LRS sign) is the signal.
+OBV_LRS_WINDOWS = [50, 100, 200]
 
 
 def _vol_norm_momentum(close: pd.Series, n: int) -> pd.Series:
@@ -175,9 +186,28 @@ def _short_reversal(close: pd.Series, n: int) -> pd.Series:
     return close.pct_change(n)
 
 
-def compute_all_signals(close: pd.Series) -> dict:
+def _raw_return(close: pd.Series, n: int) -> pd.Series:
+    """Raw (non-vol-normalized) n-day return -- base series for
+    cross-sectional relative-strength-vs-market, computed at the panel
+    level since a single ticker can't see the market average by itself."""
+    return close.pct_change(n)
+
+
+def _obv(close: pd.Series, volume: pd.Series) -> pd.Series:
+    direction = np.sign(close.diff()).fillna(0)
+    return (direction * volume).cumsum()
+
+
+def _obv_lrs_sign(close: pd.Series, volume: pd.Series, n: int) -> pd.Series:
+    obv = _obv(close, volume)
+    return np.sign(_linreg_slope(obv, n)).fillna(0)
+
+
+def compute_all_signals(close: pd.Series, volume: pd.Series | None = None) -> dict:
     """Returns {signal_name: pd.Series} for every parameter instance of
-    every family. Keys are used as-is in the optimization leaderboard."""
+    every family. Keys are used as-is in the optimization leaderboard.
+    volume is optional (backward-compatible with callers that only have
+    price) -- OBV-based signals are skipped if not provided."""
     out = {}
 
     for n in MOMENTUM_WINDOWS:
@@ -215,10 +245,17 @@ def compute_all_signals(close: pd.Series) -> dict:
     for n in SHORT_REVERSAL_WINDOWS:
         out[f"ShortRet_{n}"] = _short_reversal(close, n)
 
+    for n in RAW_RET_WINDOWS:
+        out[f"RawRet_{n}"] = _raw_return(close, n)
+
+    if volume is not None:
+        for n in OBV_LRS_WINDOWS:
+            out[f"OBV_LRS_{n}"] = _obv_lrs_sign(close, volume, n)
+
     return out
 
 
-DISCRETE_FAMILIES = ("MA_", "EMA_", "TRIX_", "KAMA_", "Donchian_", "BB_", "LRS_")
+DISCRETE_FAMILIES = ("MA_", "EMA_", "TRIX_", "KAMA_", "Donchian_", "BB_", "LRS_", "OBV_LRS_")
 
 
 def is_discrete(signal_name: str) -> bool:
