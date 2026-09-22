@@ -25,7 +25,7 @@ SCRATCH = Path(
 )
 
 MIN_ROWS_REQUIRED = 300
-FWD_HORIZONS = [21, 63]
+FWD_HORIZONS = [5, 21, 63]  # ~1 week, ~1 month, ~3 months
 SPLIT_DATE = pd.Timestamp("2018-01-01")
 
 
@@ -133,7 +133,7 @@ def main():
     elapsed = time.time() - t0
     print(f"\nPanel built in {elapsed:.1f}s: {len(panel)} obs, {panel['Ticker'].nunique()} tickers\n")
 
-    signal_cols = [c for c in panel.columns if c not in ("Ticker", "Date", "FwdRet_21", "FwdRet_63")]
+    signal_cols = [c for c in panel.columns if c not in ("Ticker", "Date") and not c.startswith("FwdRet_")]
     print(f"Testing {len(signal_cols)} signal instances (NIFTY 500 only) "
           f"across train/test split (split date: {SPLIT_DATE.date()})...\n")
 
@@ -144,8 +144,11 @@ def main():
     print(f"Test:  {test_panel['Date'].min().date()} -> {test_panel['Date'].max().date()} "
           f"({test_panel['Date'].nunique()} months)\n")
 
+    horizon_names = {5: "1wk", 21: "1mo", 63: "3mo"}
+    consolidated = {}
+
     for horizon in FWD_HORIZONS:
-        print(f"\n{'='*100}\nHORIZON: {horizon} trading days\n{'='*100}")
+        print(f"\n{'='*100}\nHORIZON: {horizon} trading days ({horizon_names[horizon]})\n{'='*100}")
         results = []
         for signal in signal_cols:
             tr = analyze_signal(train_panel, signal, horizon)
@@ -158,6 +161,8 @@ def main():
             })
 
         df = pd.DataFrame(results).sort_values("test_hit", ascending=False)
+        consolidated[horizon] = df.set_index("signal")[["test_hit", "test_ic"]].copy()
+
         df["train_hit"] = (df["train_hit"] * 100).round(1)
         df["test_hit"] = (df["test_hit"] * 100).round(1)
         df["train_ic"] = df["train_ic"].round(4)
@@ -172,6 +177,15 @@ def main():
             print("  None found at this horizon.")
         else:
             print(robust_df.drop(columns="robust").to_string(index=False))
+
+    print(f"\n\n{'='*100}\nCONSOLIDATED: TEST-period hit rate across all 3 horizons\n{'='*100}")
+    combo = pd.DataFrame({
+        f"{horizon_names[h]}_hit": (consolidated[h]["test_hit"] * 100).round(1)
+        for h in FWD_HORIZONS
+    })
+    combo["avg_hit"] = combo.mean(axis=1).round(1)
+    combo = combo.sort_values("avg_hit", ascending=False)
+    print(combo.to_string())
 
 
 if __name__ == "__main__":

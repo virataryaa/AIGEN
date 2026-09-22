@@ -177,6 +177,42 @@ across both universes, both horizons, multiple windows (50/100/150/200 all
 positive). Worth folding into the production composite alongside
 Momentum/TRIX/MA-cross.
 
+### Adding a 1-week horizon — signals are useless short-term
+Re-ran the NIFTY-500 grid with a 3rd horizon (5 trading days, ~1 week)
+alongside the existing 1-month/3-month. (Caught mistake #8 while doing
+this — see below.)
+
+| Signal | 1-Week | 1-Month | 3-Month | Avg |
+|---|---|---|---|---|
+| **TRIX_100** | 55.3% | 68.0% | 70.9% | **64.7% (best avg)** |
+| Momentum_200 | 57.3% | 65.0% | 67.0% | 63.1% |
+| EMA_50_200 | 56.3% | 67.0% | 64.1% | 62.5% |
+| LRS_100 | 54.4% | 62.1% | 69.9% | 62.1% |
+| RSI (7/14/21) | 43-49% | 45-52% | 53-55% | 48-51% |
+| ZScore (mean-reversion) | 46-51% | 51-54% | 50-58% | 50-53% |
+| Donchian_10 (worst) | 48.5% | 47.6% | 47.6% | 47.9% |
+
+**No signal exceeds 58% hit rate at the 1-week horizon** — every single
+one of the 44 signals is weak-to-random short-term. Performance climbs
+steadily from 1-week to 1-month to 3-month across the board. **Conclusion:
+this signal engine should not be used for short-term/weekly trading
+decisions — it only becomes usable at a 1-3 month holding horizon.**
+`TRIX_100` remains the most consistent performer across all three
+horizons.
+
+8. **Forgot to exclude the new horizon's own forward-return column from
+   the signal list.** When adding the 5-day horizon, `signal_cols` was
+   still hardcoded to exclude only `FwdRet_21`/`FwdRet_63` by name — the
+   new `FwdRet_5` column slipped through and got tested as if it were a
+   "signal," producing a ~100% hit rate (it was being correlated against
+   itself/near-itself). Fix: exclude by prefix
+   (`not c.startswith("FwdRet_")`) instead of hardcoding each horizon's
+   column name. **Lesson: when a new parameterized column is added to a
+   loop-generated panel, don't hardcode exclusion lists by exact name —
+   any all-metrics-look-impossible result (see mistake #7) is a prompt to
+   check whether a new column silently joined the wrong side of the
+   analysis.**
+
 **Known caveat: survivorship bias.** The universe is today's active NSE
 list — any company that delisted/went bankrupt between 2000-2026 is
 invisible to this backtest, which will make historical performance look
