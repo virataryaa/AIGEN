@@ -56,7 +56,36 @@ by composite score (computed causally — only data up to that date), split
 into quintiles, measure forward returns (21d / 63d), check whether Q1
 (highest score) beats Q5 (lowest) and compute the Information Coefficient
 (Spearman rank correlation, score vs forward return).
-*(Results to be filled in once the run completes — see conversation for latest numbers.)*
+
+**Result (982 tickers, 305 monthly rebalances, 2001-03 to 2026-06): the
+composite signal underperforms, and the underperformance is statistically
+significant, not noise.**
+
+| Metric | 1-month horizon | 3-month horizon |
+|---|---|---|
+| Q1 (top score) avg fwd return | 2.23% | 7.27% |
+| Q5 (bottom score) avg fwd return | 3.48% | 12.69% |
+| Q1 − Q5 spread | -1.25% (ann. -15.0%) | -5.41% (ann. -21.7%) |
+| t-stat / p-value | -3.06 / 0.0024 | -3.38 / 0.0008 |
+| Hit rate (Q1 > Q5) | 40.0% | 31.8% |
+| Mean IC (Spearman) | +0.016 | +0.039 |
+| Monotonic Q1>...>Q5 | No | No |
+
+**Reading this correctly:** the top-scored quintile *lost* to the
+bottom-scored quintile, with high statistical confidence (p<0.01) — the
+opposite of what a working long-signal should show. The weak positive IC
+(cross-section-wide) alongside a negative Q1-Q5 spread suggests the
+relationship breaks down specifically at the extremes — likely a
+**momentum-crash / overbought-reversal effect**: stocks with the highest
+composite scores (recent breakout + strong momentum, e.g. the 20-day
+Donchian signal) tend to be short-term overbought and mean-revert, rather
+than continuing to trend, at least on this universe/period. **This
+composite, as currently built, should not be used as-is for a long
+screen** — it needs revision (candidates: drop or down-weight the
+Donchian breakout component, test each signal's standalone IC before
+combining, or explicitly separate a "trend continuation" regime from an
+"overbought reversal" regime) before treating its ranking as
+decision-useful.
 
 **Known caveat: survivorship bias.** The universe is today's active NSE
 list — any company that delisted/went bankrupt between 2000-2026 is
@@ -120,7 +149,12 @@ by `Code/generate_static_report.py` for quick local viewing without
 running Streamlit at all.
 
 ## Open items / next steps
-- Fill in backtest results once the run completes
+- **Composite signal needs revision — backtest shows it currently
+  underperforms (see Backtest section above), not just "unproven."**
+  Next: test each of the 6 signals' standalone IC/quintile spread
+  separately to find which one(s) are dragging performance down (prime
+  suspect: Donchian breakout, on overbought-reversal grounds) before
+  recombining.
 - Decide whether to add fundamentals (PE/PB/ROE/debt) — current screener
   is technical-only, not true value investing
 - `Automator/` not yet set up for scheduled daily refresh
