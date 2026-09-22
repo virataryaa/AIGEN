@@ -46,15 +46,24 @@ def load_returns_matrix() -> pd.DataFrame:
     return wide.sort_index()
 
 
+@st.cache_data
+def load_signals() -> pd.DataFrame:
+    signals = pd.read_parquet(DATABASE_DIR / "signals.parquet")
+    return signals.merge(
+        universe[["Ticker", "Company Name", "Industry"]], on="Ticker", how="left"
+    )
+
+
 universe = load_universe()
 all_prices = load_all_prices()
 returns_matrix = load_returns_matrix()
+signals = load_signals()
 
 st.title("Aigen Vector")
 st.caption("Indian equities database — daily OHLCV, NSE universe, correlation explorer")
 
-tab_overview, tab_price, tab_corr = st.tabs(
-    ["Universe Overview", "Price Explorer", "Correlation Explorer"]
+tab_overview, tab_price, tab_corr, tab_signal = st.tabs(
+    ["Universe Overview", "Price Explorer", "Correlation Explorer", "Signal Screener"]
 )
 
 with tab_overview:
@@ -171,3 +180,53 @@ with tab_corr:
             ),
             hide_index=True,
         )
+
+with tab_signal:
+    st.write(
+        "Simplified trend-following composite score, computed locally "
+        "(momentum + MA-cross + Donchian breakout). +1 = strongly bullish, "
+        "-1 = strongly bearish. Not a fundamental/value signal — purely "
+        "price/volume based."
+    )
+    st.caption(f"Signals as of {pd.to_datetime(signals['Date']).max().date()} "
+               f"— {len(signals)} tickers scored")
+
+    col1, col2 = st.columns(2)
+    industry_filter = col1.multiselect(
+        "Filter by industry", sorted(signals["Industry"].dropna().unique())
+    )
+    min_composite, max_composite = col2.slider(
+        "Composite score range", -1.0, 1.0, (-1.0, 1.0), step=0.05
+    )
+
+    filtered = signals[
+        (signals["Composite"] >= min_composite) & (signals["Composite"] <= max_composite)
+    ]
+    if industry_filter:
+        filtered = filtered[filtered["Industry"].isin(industry_filter)]
+
+    display_cols = [
+        "Ticker", "Company Name", "Industry", "Close", "Composite",
+        "Momentum_20", "Momentum_100", "MA_cross_50_200", "Donchian_20", "RSI_14",
+    ]
+    st.dataframe(
+        filtered[display_cols].sort_values("Composite", ascending=False),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Top 15 — most bullish")
+        top15 = filtered.nlargest(15, "Composite")
+        fig = px.bar(top15, x="Composite", y="Ticker", orientation="h",
+                     color="Composite", color_continuous_scale="RdYlGn")
+        fig.update_layout(yaxis={"categoryorder": "total ascending"})
+        st.plotly_chart(fig, use_container_width=True)
+    with col2:
+        st.subheader("Top 15 — most bearish")
+        bottom15 = filtered.nsmallest(15, "Composite")
+        fig = px.bar(bottom15, x="Composite", y="Ticker", orientation="h",
+                     color="Composite", color_continuous_scale="RdYlGn")
+        fig.update_layout(yaxis={"categoryorder": "total descending"})
+        st.plotly_chart(fig, use_container_width=True)
