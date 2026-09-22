@@ -158,6 +158,21 @@ better than a real-time strategy would have achieved.
    dramatically wrong (a working signal being *actively* harmful, not just
    noisy), suspect the harness before the signal.**
 
+7. **Discrete-signal spread calc silently produced a fake 100% hit rate.**
+   `optimize_signals.py`'s first version computed the discrete-signal
+   spread as `means.max() - means.min()` (max and min of the group-mean
+   *returns*), which is mathematically always ≥ 0 for any signal with 2+
+   states — so every discrete signal (MA-cross, EMA-cross, Donchian, BB,
+   TRIX, KAMA — 24 of the 34 tested) showed a suspicious, impossible 100%
+   hit rate in both train and test. Fix: spread must be directional —
+   mean return of the **highest signal state value** (e.g. +1) minus mean
+   return of the **lowest state value** (e.g. -1), using `means.index.max()
+   /min()` (the state values), not `means.max()/min()` (the return
+   values). **Lesson: any backtest metric that comes back at a suspiciously
+   perfect number (100%, 0%, exactly 1.0) is almost always a harness bug,
+   not a real result — check the metric's math before trusting the
+   number, same as mistake #6.**
+
 5. **Streamlit Cloud served a stale build after a push.** After fixing
    mistake #1, the deployed app still threw `FileNotFoundError` for
    `signals.parquet` even though it was confirmed present on GitHub via
