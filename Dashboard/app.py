@@ -169,15 +169,17 @@ with tab_corr:
         st.plotly_chart(fig, use_container_width=True)
 
         st.subheader("Most correlated pairs")
+        corr_named = corr.copy()
+        corr_named.index.name = "Ticker A"
+        corr_named.columns.name = "Ticker B"
         corr_pairs = (
-            corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
+            corr_named.where(np.triu(np.ones(corr_named.shape), k=1).astype(bool))
             .stack()
             .sort_values(ascending=False)
         )
+        corr_pairs.name = "Correlation"
         st.dataframe(
-            corr_pairs.head(15).reset_index().rename(
-                columns={"level_0": "Ticker A", "level_1": "Ticker B", 0: "Correlation"}
-            ),
+            corr_pairs.head(15).reset_index(),
             hide_index=True,
         )
 
