@@ -1,7 +1,7 @@
 raw_tag,canonical_name,statement,sector
 RevenueFromOperations,Revenue,PnL,General
 Income,TotalIncome,PnL,General
-InterestEarned,Revenue,PnL,Financial
+InterestEarned,InterestEarnedRaw,PnL,Financial
 InterestExpended,InterestExpense,PnL,Financial
 Deposits,Deposits,BS,Financial
 Advances,Advances,BS,Financial

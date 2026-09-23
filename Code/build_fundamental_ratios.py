@@ -20,6 +20,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from fetch_fundamentals import NON_TICKER_FILES
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 FUNDAMENTALS_DIR = BASE_DIR / "Database" / "fundamentals"
 
@@ -30,14 +32,21 @@ FLOW_FIELDS = ["Revenue", "NetProfit", "NetProfitToOwners", "InterestExpense",
                # Conceptually point-in-time (share capital), but NSE tags
                # them under the filing's duration context, not Instant --
                # confirmed empirically (0 Instant rows, all Quarter/Annual).
-               "PaidUpCapital", "FaceValue"]
+               "PaidUpCapital", "FaceValue",
+               # Kept separate from Revenue (not merged via field_mapping.csv)
+               # because diversified financials (e.g. JMFINANCIL) report BOTH
+               # RevenueFromOperations AND InterestEarned in the same filing --
+               # mapping both straight to "Revenue" made pivot_table's
+               # aggfunc="first" arbitrarily pick whichever tag happened to
+               # come first, silently understating revenue for such
+               # companies (caught cross-checking against yfinance). Combined
+               # explicitly below: Revenue if present, else InterestEarnedRaw
+               # (true pure-banks, which never tag RevenueFromOperations at all).
+               "InterestEarnedRaw"]
 STOCK_FIELDS = ["TotalEquity", "EquityToOwners", "DebtCurrent", "DebtNonCurrent",
                 "TotalAssets", "TotalLiabilities", "Cash", "Inventory",
                 "Receivables", "Payables", "DebtEquityRatio_Reported",
                 "BankCapital", "BankReserves", "BankBorrowings"]
-
-
-NON_TICKER_FILES = {"ratios_wide.parquet", "valuation_snapshot.parquet"}
 
 
 def load_all_facts() -> pd.DataFrame:
@@ -77,6 +86,16 @@ def pivot_wide(facts: pd.DataFrame) -> pd.DataFrame:
     )
 
     wide = flow_wide.join(stock_wide, how="outer").reset_index()
+
+    # Prefer RevenueFromOperations; fall back to InterestEarned only when
+    # it's genuinely absent (pure banks, which never tag RevenueFromOperations
+    # at all) -- see the FLOW_FIELDS comment on InterestEarnedRaw above.
+    if "InterestEarnedRaw" in wide.columns:
+        if "Revenue" not in wide.columns:
+            wide["Revenue"] = np.nan
+        wide["Revenue"] = wide["Revenue"].where(wide["Revenue"].notna(), wide["InterestEarnedRaw"])
+        wide = wide.drop(columns=["InterestEarnedRaw"])
+
     return wide
 
 

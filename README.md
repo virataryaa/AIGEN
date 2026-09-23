@@ -365,6 +365,41 @@ more robust.
     and is worth doing again before trusting other computed ratios
     (Debt/Equity, margins) at face value.**
 
+15. **Diversified financial companies that tag BOTH `RevenueFromOperations`
+    AND `InterestEarned` in the same filing had Revenue silently
+    understated** — both raw tags mapped to the same canonical `Revenue`
+    name in `field_mapping.csv`, so `pivot_table(aggfunc="first")` picked
+    whichever one happened to come first, not the more complete one.
+    Caught by the same round of external (yfinance) cross-checking as
+    mistake #14: JMFINANCIL showed Revenue=423 cr when its own filing's
+    `RevenueFromOperations` tag says 1,200 cr (`InterestEarned` alone was
+    only 423 cr — a sub-component, not the total). Pure banks (which never
+    tag `RevenueFromOperations` at all) were unaffected. Fix: kept
+    `InterestEarned` as its own canonical name (`InterestEarnedRaw`) instead
+    of merging it into `Revenue` at mapping time; `Revenue` is now built
+    explicitly as `RevenueFromOperations` with `InterestEarnedRaw` only as
+    a fallback when the former is genuinely absent. **Note: after this
+    fix, MUTHOOTFIN/BAJFINANCE/ITC still show a real gap vs yfinance's own
+    "Total Revenue" (30-55% off) — investigated and this looks like a
+    genuine gross-vs-net or provider-methodology difference (e.g. ITC's
+    2025 Hotels demerger may not be fully reflected in yfinance's
+    restated figures yet), not a bug in this pipeline; our figure is the
+    company's own filed number, which is the more authoritative source,
+    but won't always match a secondary aggregator exactly.**
+
+16. **The same "glob picks up non-ticker files" mistake happened a third
+    time.** `NON_TICKER_FILES` exclusion sets in both
+    `build_fundamental_ratios.py` and `reapply_field_mapping.py` were
+    updated when `ratios_wide.parquet` was added, but not again when
+    `valuation_snapshot.parquet` was added later — both scripts crashed
+    trying to read it as if it were a ticker file (`KeyError:
+    'CanonicalName'` / `'FieldName'`). **Lesson: every place that globs
+    `Database/fundamentals/*.parquet` needs the SAME exclusion list, and
+    that list needs updating every time a new derived/summary file is
+    added to that folder — worth centralizing this into one shared
+    constant instead of copy-pasting the set into each script, since it's
+    now failed identically three times.**
+
 **Known caveat: survivorship bias.** The universe is today's active NSE
 list — any company that delisted/went bankrupt between 2000-2026 is
 invisible to this backtest, which will make historical performance look

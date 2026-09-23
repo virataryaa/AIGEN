@@ -16,9 +16,9 @@ from pathlib import Path
 
 import pandas as pd
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-FUNDAMENTALS_DIR = BASE_DIR / "Database" / "fundamentals"
-NON_TICKER_FILES = {"field_mapping.csv", "ratios_wide.parquet"}
+from fetch_fundamentals import FUNDAMENTALS_DIR, NON_TICKER_FILES as _PARQUET_EXCLUDES
+
+NON_TICKER_FILES = _PARQUET_EXCLUDES | {"field_mapping.csv"}
 
 CATEGORICAL_COLS = ["Ticker", "PeriodType", "Consolidated", "Source",
                      "FieldName", "ContextRef", "DurationClass",

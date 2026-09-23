@@ -29,6 +29,13 @@ DATABASE_DIR = BASE_DIR / "Database"
 FUNDAMENTALS_DIR = DATABASE_DIR / "fundamentals"
 FUNDAMENTALS_DIR.mkdir(parents=True, exist_ok=True)
 
+# Single source of truth for every derived/summary file living alongside the
+# per-ticker parquets in FUNDAMENTALS_DIR -- any script that globs
+# FUNDAMENTALS_DIR/*.parquet must exclude these (see README mistake #16:
+# this exact class of bug -- a new derived file added here without also
+# updating every glob's exclusion set -- has happened three times).
+NON_TICKER_FILES = {"ratios_wide.parquet", "valuation_snapshot.parquet"}
+
 SCRATCH = Path(
     r"C:/Users/VIRAT~1.ARY/AppData/Local/Temp/claude/C--Users-virat-arya/"
     r"dde5ced3-1028-4c8f-91f7-137de3f81533/scratchpad"
