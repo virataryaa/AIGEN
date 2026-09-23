@@ -1,15 +1,11 @@
 from pathlib import Path
 
-import duckdb
-import numpy as np
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATABASE_DIR = BASE_DIR / "Database"
-PRICES_GLOB = str(DATABASE_DIR / "prices" / "*.parquet")
 
 st.set_page_config(page_title="Aigen Vector", layout="wide")
 
@@ -20,171 +16,89 @@ def load_universe() -> pd.DataFrame:
 
 
 @st.cache_data
-def load_all_prices() -> pd.DataFrame:
-    """Built in-memory from the per-ticker parquet files (not stored on disk,
-    to avoid committing large derived files to git)."""
-    con = duckdb.connect()
-    return con.execute(f"""
-        SELECT Ticker, Date, Open, High, Low, Close, Adj_Close, Volume,
-               Dividends, Stock_Splits
-        FROM read_parquet('{PRICES_GLOB}')
-        ORDER BY Ticker, Date
-    """).fetchdf()
-
-
-@st.cache_data
-def load_returns_matrix() -> pd.DataFrame:
-    """Daily returns pivoted wide (Date x Ticker), built in-memory via DuckDB."""
-    con = duckdb.connect()
-    returns_df = con.execute(f"""
-        SELECT Ticker, Date,
-               Adj_Close / LAG(Adj_Close) OVER (PARTITION BY Ticker ORDER BY Date) - 1 AS ret
-        FROM read_parquet('{PRICES_GLOB}')
-    """).fetchdf()
-    wide = returns_df.pivot(index="Date", columns="Ticker", values="ret")
-    wide.index = pd.to_datetime(wide.index)
-    return wide.sort_index()
-
-
-@st.cache_data
 def load_signals() -> pd.DataFrame:
     signals = pd.read_parquet(DATABASE_DIR / "signals.parquet")
+    universe = load_universe()
     return signals.merge(
         universe[["Ticker", "Company Name", "Industry"]], on="Ticker", how="left"
     )
 
 
-universe = load_universe()
-all_prices = load_all_prices()
-returns_matrix = load_returns_matrix()
-signals = load_signals()
+@st.cache_data
+def load_valuation() -> pd.DataFrame:
+    return pd.read_parquet(DATABASE_DIR / "fundamentals" / "valuation_snapshot.parquet")
+
 
 st.title("Aigen Vector")
-st.caption("Indian equities database — daily OHLCV, NSE universe, correlation explorer")
 
-tab_overview, tab_price, tab_corr, tab_signal = st.tabs(
-    ["Universe Overview", "Price Explorer", "Correlation Explorer", "Signal Screener"]
-)
+tab_fundamentals, tab_signals = st.tabs(["Fundamentals", "Signal Screener"])
 
-with tab_overview:
+with tab_fundamentals:
+    val = load_valuation()
+
+    st.caption(
+        "Latest quarterly fundamentals combined with current price — PE/PB "
+        "computed from TTM EPS and reported book value. NIFTY 500 universe, "
+        "480 companies. History from 2018 (XBRL mandate start)."
+    )
+
     col1, col2, col3 = st.columns(3)
-    col1.metric("Tickers tracked", f"{universe['Ticker'].nunique():,}")
-    col2.metric("Industries", f"{universe['Industry'].nunique():,}")
-    col3.metric("Total price rows", f"{len(all_prices):,}")
+    industry_filter = col1.multiselect(
+        "Industry", sorted(val["Industry"].dropna().unique())
+    )
+    pe_range = col2.slider("PE range", 0.0, 100.0, (0.0, 100.0), step=1.0)
+    roe_range = col3.slider("ROE range (%)", -50.0, 50.0, (-50.0, 50.0), step=1.0)
 
-    industry_counts = (
-        universe.groupby("Industry")["Ticker"].nunique().sort_values(ascending=False)
+    f = val.copy()
+    if industry_filter:
+        f = f[f["Industry"].isin(industry_filter)]
+    f = f[
+        (f["PE"].between(*pe_range) | f["PE"].isna())
+        & (f["ROE"] * 100 >= roe_range[0]) & (f["ROE"] * 100 <= roe_range[1])
+    ]
+
+    display_cols = ["Ticker", "Company", "Industry", "LatestPrice", "PE", "PB",
+                     "ROE", "DebtEquity_Calc", "NetMargin", "Revenue_YoY",
+                     "NetProfit_YoY", "LatestFilingDate"]
+    display_df = f[display_cols].copy()
+    for pct_col in ["ROE", "NetMargin", "Revenue_YoY", "NetProfit_YoY"]:
+        display_df[pct_col] = (display_df[pct_col] * 100).round(1)
+    display_df[["PE", "PB", "DebtEquity_Calc", "LatestPrice"]] = display_df[
+        ["PE", "PB", "DebtEquity_Calc", "LatestPrice"]
+    ].round(2)
+
+    st.dataframe(
+        display_df.sort_values("PE"),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "ROE": st.column_config.NumberColumn("ROE %"),
+            "NetMargin": st.column_config.NumberColumn("Net Margin %"),
+            "Revenue_YoY": st.column_config.NumberColumn("Revenue YoY %"),
+            "NetProfit_YoY": st.column_config.NumberColumn("Net Profit YoY %"),
+            "DebtEquity_Calc": st.column_config.NumberColumn("Debt/Equity"),
+        },
     )
-    fig = px.bar(
-        industry_counts,
-        orientation="h",
-        labels={"value": "Number of tickers", "Industry": ""},
-        title="Tickers by Industry",
+
+    st.subheader("Value vs Quality")
+    st.caption("Bottom-left = cheap AND profitable. Bubble size = Debt/Equity (bigger = more leveraged).")
+    scatter_df = f.dropna(subset=["PE", "ROE"]).copy()
+    scatter_df = scatter_df[(scatter_df["PE"] > 0) & (scatter_df["PE"] < 100)]
+    scatter_df["ROE_pct"] = scatter_df["ROE"] * 100
+    scatter_df["DebtEquity_abs"] = scatter_df["DebtEquity_Calc"].abs().fillna(0).clip(upper=5)
+    fig = px.scatter(
+        scatter_df, x="PE", y="ROE_pct", color="Industry",
+        size="DebtEquity_abs", size_max=20,
+        hover_data=["Ticker", "Company"],
+        labels={"ROE_pct": "ROE %", "PE": "PE ratio"},
     )
-    fig.update_layout(showlegend=False, yaxis={"categoryorder": "total ascending"})
+    fig.update_layout(height=550, showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
 
-    st.subheader("Universe table")
-    industry_filter = st.multiselect(
-        "Filter by industry", sorted(universe["Industry"].dropna().unique())
-    )
-    display_df = universe
-    if industry_filter:
-        display_df = universe[universe["Industry"].isin(industry_filter)]
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+with tab_signals:
+    signals = load_signals()
 
-with tab_price:
-    tickers = sorted(universe["Ticker"].unique())
-    default_idx = tickers.index("RELIANCE.NS") if "RELIANCE.NS" in tickers else 0
-    selected = st.selectbox("Select a ticker", tickers, index=default_idx)
-
-    ticker_prices = all_prices[all_prices["Ticker"] == selected].sort_values("Date")
-
-    if ticker_prices.empty:
-        st.warning("No price data for this ticker.")
-    else:
-        fig = go.Figure()
-        fig.add_trace(
-            go.Candlestick(
-                x=ticker_prices["Date"],
-                open=ticker_prices["Open"],
-                high=ticker_prices["High"],
-                low=ticker_prices["Low"],
-                close=ticker_prices["Close"],
-                name=selected,
-            )
-        )
-        fig.update_layout(
-            title=f"{selected} — Daily Price History",
-            xaxis_rangeslider_visible=False,
-            height=500,
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-        vol_fig = px.bar(ticker_prices, x="Date", y="Volume", title="Volume")
-        st.plotly_chart(vol_fig, use_container_width=True)
-
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Latest Close", f"{ticker_prices['Close'].iloc[-1]:,.2f}")
-        col2.metric("52W High", f"{ticker_prices['Close'].tail(252).max():,.2f}")
-        col3.metric("52W Low", f"{ticker_prices['Close'].tail(252).min():,.2f}")
-        col4.metric("Data since", str(ticker_prices["Date"].min().date()))
-
-with tab_corr:
-    st.write(
-        "Pick an industry (correlation among peers) or hand-pick tickers "
-        "for a custom correlation heatmap, computed from daily returns."
-    )
-
-    mode = st.radio("Mode", ["By Industry", "Custom Selection"], horizontal=True)
-
-    if mode == "By Industry":
-        industry = st.selectbox(
-            "Industry", sorted(universe["Industry"].dropna().unique())
-        )
-        peer_tickers = universe.loc[
-            universe["Industry"] == industry, "Ticker"
-        ].tolist()
-    else:
-        peer_tickers = st.multiselect(
-            "Select tickers (recommended: under 40 for a readable heatmap)",
-            sorted(universe["Ticker"].unique()),
-            default=["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS"],
-        )
-
-    available = [t for t in peer_tickers if t in returns_matrix.columns]
-
-    if len(available) < 2:
-        st.info("Select at least 2 tickers with available data.")
-    else:
-        corr = returns_matrix[available].corr()
-        fig = px.imshow(
-            corr,
-            color_continuous_scale="RdBu",
-            zmin=-1,
-            zmax=1,
-            aspect="auto",
-            title=f"Correlation Heatmap ({len(available)} tickers, daily returns)",
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.subheader("Most correlated pairs")
-        corr_named = corr.copy()
-        corr_named.index.name = "Ticker A"
-        corr_named.columns.name = "Ticker B"
-        corr_pairs = (
-            corr_named.where(np.triu(np.ones(corr_named.shape), k=1).astype(bool))
-            .stack()
-            .sort_values(ascending=False)
-        )
-        corr_pairs.name = "Correlation"
-        st.dataframe(
-            corr_pairs.head(15).reset_index(),
-            hide_index=True,
-        )
-
-with tab_signal:
-    st.write(
+    st.caption(
         "Simplified trend-following composite score, computed locally "
         "(momentum + MA-cross + Donchian breakout). +1 = strongly bullish, "
         "-1 = strongly bearish. Not a fundamental/value signal — purely "
@@ -194,8 +108,8 @@ with tab_signal:
                f"— {len(signals)} tickers scored")
 
     col1, col2 = st.columns(2)
-    industry_filter = col1.multiselect(
-        "Filter by industry", sorted(signals["Industry"].dropna().unique())
+    industry_filter2 = col1.multiselect(
+        "Filter by industry", sorted(signals["Industry"].dropna().unique()), key="sig_industry"
     )
     min_composite, max_composite = col2.slider(
         "Composite score range", -1.0, 1.0, (-1.0, 1.0), step=0.05
@@ -204,15 +118,15 @@ with tab_signal:
     filtered = signals[
         (signals["Composite"] >= min_composite) & (signals["Composite"] <= max_composite)
     ]
-    if industry_filter:
-        filtered = filtered[filtered["Industry"].isin(industry_filter)]
+    if industry_filter2:
+        filtered = filtered[filtered["Industry"].isin(industry_filter2)]
 
-    display_cols = [
+    display_cols2 = [
         "Ticker", "Company Name", "Industry", "Close", "Composite",
         "Momentum_20", "Momentum_100", "MA_cross_50_200", "Donchian_20", "RSI_14",
     ]
     st.dataframe(
-        filtered[display_cols].sort_values("Composite", ascending=False),
+        filtered[display_cols2].sort_values("Composite", ascending=False),
         use_container_width=True,
         hide_index=True,
     )

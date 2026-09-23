@@ -265,10 +265,218 @@ more robust.
    check whether a new column silently joined the wrong side of the
    analysis.**
 
+9. **Parallelizing the NSE fundamentals fetch triggered blocking after the
+   first burst.** `fetch_fundamentals_parallel.py` (8 threads) got the
+   first 8 tickers through cleanly, then every ticker after that came back
+   "NO DATA" — 42/50 failed. The sequential version (`fetch_fundamentals.py`,
+   one ticker at a time with a 0.2s delay between requests) had zero
+   failures. **Lesson: this is the same pattern as the earlier yfinance
+   rate-limit mistake — NSE's public API tolerates a slow, steady request
+   rate but not a concurrent burst, even though no rate limit is
+   documented. Don't parallelize scrape-style fetches against
+   undocumented public APIs without testing failure behavior on a small
+   batch first — the failure mode is silent (empty response, not an
+   HTTP error), so a naive parallel run can look like it's "working
+   fast" while actually returning nothing for most tickers.**
+
+10. **Deleted already-fetched raw fundamentals before reprocessing them,
+    forcing an unnecessary full network re-fetch.** When adding the
+    enrichment step (Industry flag, canonical field mapping, ValueNumeric,
+    compression), the 23 tickers that had already downloaded successfully
+    were wiped (`rm *.parquet`) before rerunning the fetch script, instead
+    of loading their existing raw facts and passing them through
+    `enrich_and_optimize()` locally (zero network calls needed). Only the
+    27 that had failed actually needed a fresh network fetch. **Lesson:
+    when changing a downstream transform/enrichment step, re-run the
+    transform on already-fetched raw data first — don't delete and
+    re-fetch from the network unless the raw data itself is what changed.
+    Network calls are the expensive, rate-limit-risking part; local
+    reprocessing is nearly free.**
+
+11. **Older (2018-2021) legacy filings' quarterly facts were silently
+    misclassified as "Instant" and dropped from the ratio pivot,** because
+    their `contextRef` (e.g. `"OneD"`) wasn't declared as its own
+    `<xbrli:context>` element in the file — only its suffixed siblings
+    (e.g. `"OneOperatingExpenses01D"`) were declared. This is the exact
+    gotcha already flagged in `reference-nse-filings-api` memory before
+    this project even started fetching data, and it still got missed on
+    first implementation. `classify_duration()` fell back to "Instant"
+    whenever context lookup failed, silently dropping ~4 years of history
+    for most non-bank companies from the ratio table (discovered because
+    the fundamentals backtest's train set had only 150/1116 observations
+    before 2022, despite the raw fetched files clearly containing 2018+
+    data). Fix: fall back to the ID-prefix convention (`One*` = quarter,
+    `Four*` = YTD) when the context can't be resolved, instead of
+    defaulting to "Instant". **Lesson: a documented gotcha in a reference
+    memory doesn't apply itself — implement the stated fallback the first
+    time, and when a downstream analysis shows a suspicious date-range
+    skew (most data crammed into a recent window despite fetching "full
+    history"), check the parsing logic before trusting the sample.**
+
+12. **The fix for mistake #11 broke genuine instant (balance-sheet) facts
+    the same way.** NSE also uses instant-type context IDs starting with
+    "One" (e.g. `"OneI"`, resolved fine, start==end==same date). The new
+    prefix-fallback branch was reached whenever `days <= 0` fell through
+    from the main duration check, not only when the context failed to
+    resolve — so a resolved instant context (`OneI`, `days == 0`) matched
+    `ctx_ref.startswith("One")` and got wrongly classified as "Quarter"
+    instead of "Instant", deleting `TotalEquity`/`Assets`/`Debt` etc.
+    entirely from the ratio table (ROE and Debt/Equity coverage silently
+    went from 42 tickers to 0). Fix: return "Instant" immediately when
+    `days <= 0` on a *resolved* context, before ever reaching the
+    prefix-fallback branch (which now only fires when start/end are
+    actually `None`, i.e. resolution genuinely failed). **Lesson: a
+    "One*"/"Four*" prefix is not unique to duration contexts — instant
+    contexts use the same prefix family, so the fallback must be gated on
+    "context resolution failed" specifically, not on any zero/short
+    duration reaching the fallback code path by accident.**
+
 **Known caveat: survivorship bias.** The universe is today's active NSE
 list — any company that delisted/went bankrupt between 2000-2026 is
 invisible to this backtest, which will make historical performance look
 better than a real-time strategy would have achieved.
+
+## Fundamentals pipeline & backtest
+
+Separate from the OHLCV/technical pipeline above — this is the actual
+"value investing" side of the project (PE/PB/ROE/debt), started because
+the technical signal engine has no way to judge whether a stock is
+*cheap*, only whether it's *trending*.
+
+### Data source: NSE XBRL (free, no subscription needed)
+Considered paying for screener.in (bulk CSV export) but tested NSE's own
+public XBRL filings first — same free, unauthenticated pattern as the
+price data. **Verdict: don't pay for screener.in** — NSE XBRL covers every
+listed company, is the authoritative source (not a scraped/re-derived
+one), and matches this project's own principle of never letting an LLM
+touch a number that Python can extract directly from a primary source.
+- Two endpoints needed for full history: legacy `corporates-financial-results`
+  (pre-2025, frozen Dec-2024) + `integrated-filing-results` (2025+, SEBI's
+  new regime) — same filing, same numbers, different plumbing depending on
+  era.
+- **Quarterly filings**: P&L only (Revenue, Profit, EPS, segment data — 95
+  distinct tagged fields in a sample filing).
+- **Annual (March) filings**: full P&L + Balance Sheet + Cash Flow (257
+  fields) — Balance Sheet/Cash Flow items don't exist in the quarterly
+  filings at all.
+- **History depth: 2018 onward only** (XBRL mandate start), not the full
+  2000+ price history. ~32 quarters per company at most.
+- **Sector taxonomy differs**: banks/NBFCs use different tags entirely
+  (`InterestEarned`/`InterestExpended` instead of `RevenueFromOperations`/
+  `FinanceCosts`) — confirmed only 102/261 fields in common between
+  RELIANCE and KOTAKBANK. Handled via `Database/fundamentals/field_mapping.csv`,
+  a canonical-name lookup (`raw_tag -> canonical_name`) so cross-company
+  ratio computation doesn't silently break on sector-specific tag names.
+
+### Pipeline (`Code/fetch_fundamentals.py` + universe-specific wrappers)
+One long-format parquet per ticker in **`Database/fundamentals/`** (kept
+separate from `Database/prices/` on purpose — different refresh cadence,
+different schema). Each row: `Ticker, PeriodType, Consolidated,
+FilingToDate, Source, SourceFile, FieldName, Value, ContextRef,
+ContextStart, ContextEnd, DurationClass, Industry, CanonicalName,
+Statement, ValueNumeric`. Compressed with `brotli` + categorical dtypes
+(~40% smaller than default snappy+string storage, tested and confirmed).
+
+Universe built incrementally, one exchange-defined index tier at a time
+(mirrors how the technical signal universe was built up from NIFTY 500):
+| Tier | Source | Count | Script |
+|---|---|---|---|
+| Ranks 1-50 | NIFTY 50 | 47/50 fetched | `fetch_fundamentals.py` |
+| Ranks 51-100 | NIFTY Next 50 | 50/50 fetched | `fetch_fundamentals_next50.py` |
+| Ranks 101-170 | NIFTY 200 remainder | 66/70 fetched | `fetch_fundamentals_next70.py` |
+
+| Ranks 171-270ish | NIFTY 500 remainder (batch 3) | 95/100 fetched | `fetch_fundamentals_next100.py` |
+| Ranks ~271-370 | NIFTY 500 remainder (batch 4) | 84/100 fetched | `fetch_fundamentals_next100b.py` |
+| Final remainder | NIFTY 500 completion | 138/159 fetched | `fetch_fundamentals_remaining.py` |
+
+**COMPLETE as of this writing: 480/500 NIFTY 500 companies**, 30 MB
+storage, 1,067,909+ facts fetched in the final batch alone. The ~20 total
+failures across all batches return "0 filings found" — a symbol-lookup
+issue on NSE's side, not a rate-limit or parsing problem. Two recurring
+names worth a closer look eventually: **`M&M` and `M&MFIN` failed in
+every batch attempted** — likely the `&` character isn't being
+URL-encoded correctly in the API request (not yet fixed, low priority — 2
+tickers out of 500). **Ratios and backtest not yet re-run on the full
+480** — data build and validation are being kept as separate steps on
+request; this is the natural next step now that the universe is
+essentially complete.
+
+### Spot-check validation (before continuing to scale further)
+Randomly sampled companies across all 4 batches to check for silent data
+issues before trusting the growing dataset:
+- **TITAN Q4 FY24: Revenue ₹12,494 cr, Net Profit ₹771 cr** — matches
+  real-world public figures. Raw fetch/parse pipeline confirmed correct,
+  no new bugs found in this check.
+- **Found a genuine `field_mapping.csv` gap (not a fetch bug): banks use
+  a different Ind-AS schedule for both Equity and Net Profit.** Equity is
+  reported as `Capital` + `ReservesAndSurplus` (not a single `Equity`
+  tag), and net profit as `ProfitLossForThePeriod` (note "ForThe", not
+  "For") instead of `ProfitLossForPeriod`. Neither was in the mapping
+  table, so bank ROE/Debt-Equity were silently more incomplete than they
+  needed to be. Fixed: added both variants to `field_mapping.csv`, plus a
+  fallback in `build_fundamental_ratios.py` that sums `BankCapital +
+  BankReserves` when the general-taxonomy equity tags are absent. **Not
+  yet re-verified end-to-end** (ratios haven't been rebuilt since this
+  fix) — do that before trusting bank-sector ratios specifically.
+
+Fetch speed: **sequential only, ~14-18 sec/ticker** (~15 min per 50-70
+company batch). Never parallelize this — see mistake #9.
+
+### Ratio computation (`Code/build_fundamental_ratios.py`)
+Pivots the long-format facts to one row per (Ticker, PeriodType,
+FilingToDate) using `CanonicalName`, then computes: `ROE`, `DebtEquity_Calc`,
+`NetMargin`, `InterestCoverage`, `FCF` (annual only, since cash flow is
+annual-only), `Revenue_YoY`, `NetProfit_YoY`. Output: `Database/fundamentals/ratios_wide.parquet`.
+
+### Backtest (`Code/backtest_fundamentals.py`, `Code/backtest_fundamentals_sector.py`)
+Same philosophy as the technical backtest (cross-sectional rank vs forward
+return, train/test split) but adapted for quarterly-not-daily data:
+- **Reporting lag applied** (45 days quarterly / 60 days annual added to
+  the period-end date) to avoid lookahead bias — the market can't react to
+  a quarter's numbers before the company actually files them.
+- Rebalanced quarterly (not monthly, since fundamentals don't update
+  faster than that), horizons tested: 63 and 126 trading days (~3mo, ~6mo).
+
+**Result on 97 companies (NIFTY 100): inconclusive, mostly weak/negative.**
+
+| Ratio | Test IC (3mo) | Test IC (6mo) |
+|---|---|---|
+| ROE | +0.02 | +0.03 (mildly promising, only positive one both horizons) |
+| DebtEquity_Calc | +0.02 | -0.003 (inconsistent) |
+| NetMargin | -0.02 | -0.004 |
+| InterestCoverage | -0.02 | -0.03 |
+| Revenue_YoY | -0.01 | -0.04 |
+| NetProfit_YoY | -0.03 | -0.03 |
+| FCF | -0.004 | -0.07 (thin sample, only ~130-140 obs) |
+
+For comparison, the technical signals' best IC was 0.05-0.07 — fundamentals
+are meaningfully weaker on every ratio tested so far. **Sector-neutral
+ranking (long top-half/short bottom-half within the same industry+quarter)
+did not improve this** — mostly similar or slightly worse (e.g.
+DebtEquity_Calc IC went from +0.02 to -0.10), likely because with ~97
+companies across 17 industries, most sector-quarter groups only have
+4-6 names, making a median-split extremely noisy (confirmed by absurd
+spread magnitudes in the raw output, a small-N artifact, not a real
+effect).
+
+**Working hypothesis, not yet proven: this is a sample-size problem, not
+a "fundamentals don't work" problem.** NIFTY 100 is already "the best of
+the best" — there's much less quality/value dispersion to detect a signal
+from than in a 500+ stock universe. Scaling the universe (in progress,
+ranks 101-170 being fetched) is the test of this hypothesis, not a random
+next step.
+
+### Time-series / other ideas discussed, not yet built
+- **Fundamentals *trend* (YoY change, margin expansion, earnings surprise
+  vs own history) instead of static levels** — theoretically stronger for
+  large-caps where the current quality *level* is already priced in, but
+  a *change* might not be. Highest-priority idea to try once the universe
+  is large enough to test anything reliably.
+- Combining technical + fundamental signals (a stock trending AND
+  improving fundamentally) — classic quality+momentum combo, likely more
+  robust than either alone.
+- TTM (trailing 4-quarter average) ratios instead of single-quarter
+  snapshots, to smooth one-off noise.
 
 ## Mistakes made + fixes (read before repeating them)
 
@@ -363,7 +571,12 @@ running Streamlit at all.
   reweighting to lean more on `MA_cross_50_200` (strongest standalone
   driver) and less on `RSI_14`/`Momentum_20` (weakest), per the component
   backtest above.
-- Decide whether to add fundamentals (PE/PB/ROE/debt) — current screener
-  is technical-only, not true value investing
+- **Fundamentals: scale to 170+ companies (in progress) and re-run
+  `backtest_fundamentals.py`** to test whether the current weak/negative
+  results are a sample-size artifact or a real finding. Don't draw
+  conclusions from the 97-company result yet.
+- Once fundamentals show a real signal (or don't, at scale) — try the
+  time-series/trend versions (YoY change, margin expansion) before giving
+  up on the fundamentals angle entirely.
 - `Automator/` not yet set up for scheduled daily refresh
 - No `.NS` ticker de-duplication check yet if a symbol changes over time
