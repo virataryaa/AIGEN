@@ -331,6 +331,40 @@ more robust.
     "context resolution failed" specifically, not on any zero/short
     duration reaching the fallback code path by accident.**
 
+13. **`NetMargin` had ~28 `+/-inf` values (Revenue=0 in some quarters)
+    silently breaking `qcut` in `optimize_signals_nifty500.py`'s
+    quintile analysis, producing a fake 100% hit rate** for whichever
+    buckets happened to avoid an inf value — the same "impossible-number
+    is a bug, not a result" pattern as mistake #7. Fix: `.replace([inf,
+    -inf], nan)` before dropping NaNs, in every backtest script that
+    consumes a ratio built from a division.
+
+14. **ROE was computed from a single quarter's net profit divided by full
+    (annual-scale) equity — understating it by ~4x for every
+    `PeriodType == "Quarterly"` row.** Caught by cross-checking against
+    yfinance on request (external verification, not something the
+    internal backtest would ever catch on its own): TCS showed 12.7% here
+    vs yfinance's 47.7%, INFY 9.1% vs 32.0%, HDFCBANK 3.7% vs 13.8% — a
+    consistent ~4x gap on every ticker checked, because a quarter's profit
+    is ~1/4 of a year's. **This means every fundamentals backtest result
+    documented above (the 97-company and NIFTY-100 sector-neutral runs)
+    used an ROE that was systematically wrong, not just noisy — those
+    results should be re-run, not just re-read, before trusting them.**
+    Fix: `build_fundamental_ratios.py` now uses trailing-twelve-month
+    (rolling 4-quarter sum) net profit for `PeriodType == "Quarterly"`
+    rows; `PeriodType == "Annual"` rows were already correct (a full
+    year's profit) and are untouched. Re-verified post-fix: TCS 45.7% vs
+    47.7%, INFY 30.5% vs 32.0%, HDFCBANk 11.6% vs 13.8% — all within a few
+    points now. **Lesson: a ratio that divides a period-flow number
+    (profit, revenue) by a point-in-time stock number (equity, assets)
+    needs the flow side annualized/TTM'd before comparing across
+    different reporting frequencies — this class of bug won't show up as
+    a crash or a NaN, just a quietly-wrong number that still looks
+    plausible in isolation. External cross-checking (a different data
+    provider, not just internal consistency checks) is what caught this,
+    and is worth doing again before trusting other computed ratios
+    (Debt/Equity, margins) at face value.**
+
 **Known caveat: survivorship bias.** The universe is today's active NSE
 list — any company that delisted/went bankrupt between 2000-2026 is
 invisible to this backtest, which will make historical performance look
@@ -436,6 +470,13 @@ return, train/test split) but adapted for quarterly-not-daily data:
   a quarter's numbers before the company actually files them.
 - Rebalanced quarterly (not monthly, since fundamentals don't update
   faster than that), horizons tested: 63 and 126 trading days (~3mo, ~6mo).
+
+**⚠ STALE — computed before mistake #14 (ROE understated ~4x) was fixed.**
+DebtEquity_Calc/NetMargin/etc. below are unaffected by that specific bug,
+but ROE's row is not to be trusted, and the whole backtest hasn't been
+re-run since. Treat this table as history of what was tried, not a
+current finding — re-run `backtest_fundamentals.py` before drawing any
+conclusion from it.
 
 **Result on 97 companies (NIFTY 100): inconclusive, mostly weak/negative.**
 

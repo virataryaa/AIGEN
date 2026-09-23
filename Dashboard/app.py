@@ -29,6 +29,13 @@ def load_valuation() -> pd.DataFrame:
     return pd.read_parquet(DATABASE_DIR / "fundamentals" / "valuation_snapshot.parquet")
 
 
+@st.cache_data
+def load_ratios_history() -> pd.DataFrame:
+    df = pd.read_parquet(DATABASE_DIR / "fundamentals" / "ratios_wide.parquet")
+    df["_date"] = pd.to_datetime(df["FilingToDate"], format="mixed", dayfirst=True, errors="coerce")
+    return df
+
+
 st.title("Aigen Vector")
 
 tab_fundamentals, tab_signals = st.tabs(["Fundamentals", "Signal Screener"])
@@ -81,7 +88,7 @@ with tab_fundamentals:
     )
 
     st.subheader("Value vs Quality")
-    st.caption("Bottom-left = cheap AND profitable. Bubble size = Debt/Equity (bigger = more leveraged).")
+    st.caption("Bottom-left of the dashed lines = cheaper AND more profitable than the median stock here. Bubble size = Debt/Equity (bigger = more leveraged).")
     scatter_df = f.dropna(subset=["PE", "ROE"]).copy()
     scatter_df = scatter_df[(scatter_df["PE"] > 0) & (scatter_df["PE"] < 100)]
     scatter_df["ROE_pct"] = scatter_df["ROE"] * 100
@@ -92,8 +99,55 @@ with tab_fundamentals:
         hover_data=["Ticker", "Company"],
         labels={"ROE_pct": "ROE %", "PE": "PE ratio"},
     )
+    if len(scatter_df) > 1:
+        fig.add_vline(x=scatter_df["PE"].median(), line_dash="dash", line_color="gray")
+        fig.add_hline(y=scatter_df["ROE_pct"].median(), line_dash="dash", line_color="gray")
     fig.update_layout(height=550, showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Top 20 — Value + Quality combined rank")
+    st.caption("Average of PE rank (cheaper = better) and ROE rank (higher = better), among stocks with 0 < PE < 100.")
+    rank_df = f.dropna(subset=["PE", "ROE"]).copy()
+    rank_df = rank_df[(rank_df["PE"] > 0) & (rank_df["PE"] < 100)]
+    if len(rank_df) > 0:
+        rank_df["PE_rank"] = rank_df["PE"].rank(ascending=True)
+        rank_df["ROE_rank"] = rank_df["ROE"].rank(ascending=False)
+        rank_df["CombinedRank"] = (rank_df["PE_rank"] + rank_df["ROE_rank"]) / 2
+        rank_df["ROE_pct"] = (rank_df["ROE"] * 100).round(1)
+        rank_df["PE"] = rank_df["PE"].round(1)
+        top20 = rank_df.nsmallest(20, "CombinedRank")
+        st.dataframe(
+            top20[["Ticker", "Company", "Industry", "PE", "ROE_pct", "DebtEquity_Calc"]].rename(
+                columns={"ROE_pct": "ROE %"}
+            ).round(2),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.subheader("Company Trend")
+    st.caption("How a company's fundamentals have moved over its reported quarters — not just today's snapshot.")
+    trend_tickers = sorted(f["Ticker"].unique())
+    if trend_tickers:
+        selected_ticker = st.selectbox("Select a company", trend_tickers)
+        history = load_ratios_history()
+        th = history[
+            (history["Ticker"] == selected_ticker) & (history["PeriodType"] == "Quarterly")
+        ].dropna(subset=["_date"]).sort_values("_date")
+
+        if th.empty:
+            st.info("No quarterly history available for this ticker.")
+        else:
+            col1, col2 = st.columns(2)
+            with col1:
+                fig_rev = px.line(th, x="_date", y="Revenue", markers=True,
+                                   title="Revenue (quarterly)", labels={"_date": ""})
+                st.plotly_chart(fig_rev, use_container_width=True)
+            with col2:
+                roe_hist = th.dropna(subset=["ROE"]).copy()
+                roe_hist["ROE_pct"] = roe_hist["ROE"] * 100
+                fig_roe = px.line(roe_hist, x="_date", y="ROE_pct", markers=True,
+                                   title="ROE % (quarterly)", labels={"_date": "", "ROE_pct": "ROE %"})
+                st.plotly_chart(fig_roe, use_container_width=True)
 
 with tab_signals:
     signals = load_signals()

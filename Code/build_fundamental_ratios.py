@@ -37,7 +37,7 @@ STOCK_FIELDS = ["TotalEquity", "EquityToOwners", "DebtCurrent", "DebtNonCurrent"
                 "BankCapital", "BankReserves", "BankBorrowings"]
 
 
-NON_TICKER_FILES = {"ratios_wide.parquet"}
+NON_TICKER_FILES = {"ratios_wide.parquet", "valuation_snapshot.parquet"}
 
 
 def load_all_facts() -> pd.DataFrame:
@@ -97,8 +97,24 @@ def compute_ratios(wide: pd.DataFrame) -> pd.DataFrame:
 
     df["Equity_Final"] = equity
     df["SharesOutstanding"] = df.get("PaidUpCapital", nans) / df.get("FaceValue", nans)
+    df["NetProfit_Final"] = net_profit
 
-    df["ROE"] = net_profit / equity
+    df = df.sort_values(["Ticker", "PeriodType", "FilingToDate"])
+
+    # ROE divides a per-QUARTER profit flow by a full (annual-scale) equity
+    # stock -- using the raw single-quarter NetProfit directly understates
+    # ROE by ~4x for Quarterly rows (caught by cross-checking against
+    # yfinance: TCS showed 12.7% here vs 47.7% there, ~4x apart, same
+    # pattern on every ticker checked). Fix: use trailing-twelve-month
+    # (last 4 quarters, rolling) net profit for Quarterly-period rows.
+    # Annual rows already report a full-year profit, so they're untouched.
+    ttm_profit = (
+        df.groupby(["Ticker", "PeriodType"])["NetProfit_Final"]
+        .transform(lambda s: s.rolling(4, min_periods=4).sum())
+    )
+    roe_numerator = df["NetProfit_Final"].where(df["PeriodType"] == "Annual", ttm_profit)
+
+    df["ROE"] = roe_numerator / equity
     df["DebtEquity_Calc"] = debt / equity
     df["NetMargin"] = net_profit / df.get("Revenue", nans)
     df["InterestCoverage"] = df.get("ProfitBeforeTax", nans) / df.get("InterestExpense", nans)
@@ -106,7 +122,6 @@ def compute_ratios(wide: pd.DataFrame) -> pd.DataFrame:
     if "OperatingCashFlow" in df.columns and "CapEx" in df.columns:
         df["FCF"] = df["OperatingCashFlow"] - df["CapEx"].abs()
 
-    df = df.sort_values(["Ticker", "PeriodType", "FilingToDate"])
     df["Revenue_YoY"] = df.groupby(["Ticker", "PeriodType"])["Revenue"].pct_change(4)
     df["NetProfit_YoY"] = df.groupby(["Ticker", "PeriodType"])[
         "NetProfit" if "NetProfit" in df.columns else "NetProfitToOwners"
